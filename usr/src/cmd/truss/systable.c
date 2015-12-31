@@ -478,6 +478,9 @@ const struct systable systable[] = {
 {"cladm",	3, DEC, NOV, CLC, CLF, HEX},			/* 253 */
 {"uucopy",	3, DEC, NOV, HEX, HEX, UNS},			/* 254 */
 {"umount2",	2, DEC, NOV, STG, MTF},				/* 255 */
+/* My guess is the 2 are for 2 return values? */
+/* TODO: add type for cpu array and PBIND2 flags */
+{"processor_bind2", 5, DEC, NOV, IDT, DEC, UNS, HEX, HEX},	/* 256 */
 { NULL, -1, DEC, NOV},
 };
 

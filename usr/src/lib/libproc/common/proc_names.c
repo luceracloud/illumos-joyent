@@ -369,6 +369,7 @@ static const char *const systable[] = {
 	"cladm",		/* 253 */
 	"uucopy",		/* 254 */
 	"umount2"		/* 255 */
+	"processor_bind2",	/* 256 */
 };
 
 /* SYSEND == max syscall number + 1 */

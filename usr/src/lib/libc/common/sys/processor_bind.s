@@ -36,3 +36,7 @@
 	SYSCALL_RVAL1(processor_bind)
 	RET
 	SET_SIZE(processor_bind)
+
+	SYSCALL_RVAL1(processor_bind2)
+	RET
+	SET_SIZE(processor_bind2)

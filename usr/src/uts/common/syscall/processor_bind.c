@@ -340,6 +340,11 @@ processor_bind(idtype_t idtype, id_t id, processorid_t bind,
 		break;
 
 	case P_ALL:
+		/*
+		 * Unbind all threads from all CPUs. I'm not sure why
+		 * this check is here. The id and bind fields are
+		 * ignored in this case.
+		 */
 		if (id == P_MYID || bind != PBIND_NONE) {
 			ret = EINVAL;
 		} else {
@@ -376,4 +381,220 @@ processor_bind(idtype_t idtype, id_t id, processorid_t bind,
 		    sizeof (obind)) == -1)
 			ret = EFAULT;
 	return (ret ? set_errno(ret) : 0);	/* return success or failure */
+}
+
+int
+processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
+    processorid_t *ucpus, uint32_t *uflags)
+{
+	int		ret = 0;
+	int		err = 0;
+	cpu_t		*cp;
+	kthread_id_t	tp;
+	proc_t		*pp;
+	task_t		*tk;
+	kproject_t	*kpj;
+	zone_t		*zptr;
+	contract_t	*ct;
+
+	size_t ncpus = *uncpus;
+	uint32_t flags = *uflags;
+	processorid_t *cpus = kmem_zalloc(ncpus * sizeof (processorid_t),
+	    KM_SLEEP);
+
+	if (copyin(ucpus, cpus, ncpus * sizeof (processorid_t)) == -1)
+		return (set_errno(EFAULT));
+
+	/*
+	 * Since we might be making a binding to a processor, hold the
+	 * cpu_lock so that the processor cannot be taken offline while
+	 * we do this.
+	 */
+	mutex_enter(&cpu_lock);
+
+	switch (op) {
+	case PBIND2_OP_SET:
+		/*
+		 * Verify all CPU identifiers are valid.
+		 */
+		for (size_t i = 0; i < ncpus; i++) {
+			if ((cp = cpu_get(cpus[i])) == NULL ||
+			    (cp->cpu_flags & (CPU_QUIESCED | CPU_OFFLINE)))
+				ret = EINVAL;
+			else if ((cp->cpu_flags & CPU_READY) == 0)
+				ret = EIO;
+		}
+		break;
+
+	case PBIND2_OP_CLEAR:
+	case PBIND2_OP_QUERY:
+		break;
+	}
+
+	if (ret) {
+		mutex_exit(&cpu_lock);
+		return (set_errno(ret));
+	}
+
+	switch (idtype) {
+	case P_LWPID:
+		pp = curproc;
+		mutex_enter(&pp->p_lock);
+		if (id == P_MYID) {
+			ret = cpu_bind_thread2(curthread, ncpus, cpus,
+			    flags, &err);
+		} else {
+			int	found = 0;
+
+			tp = pp->p_tlist;
+			do {
+				if (tp->t_tid == id) {
+					ret = cpu_bind_thread2(tp, ncpus,
+					    cpus, flags, &err);
+					found = 1;
+					break;
+				}
+			} while ((tp = tp->t_forw) != pp->p_tlist);
+			if (!found)
+				ret = ESRCH;
+		}
+		mutex_exit(&pp->p_lock);
+		break;
+
+	case P_PID:
+		/*
+		 * Note.  Cannot use dotoprocs here because it doesn't find
+		 * system class processes, which are legal to query.
+		 */
+		mutex_enter(&pidlock);
+		if (id == P_MYID) {
+			ret = cpu_bind_process2(curproc, ncpus, cpus,
+			    flags, &err);
+		} else if ((pp = prfind(id)) != NULL) {
+			ret = cpu_bind_process2(pp, ncpus, cpus, flags,
+			    &err);
+		} else {
+			ret = ESRCH;
+		}
+		mutex_exit(&pidlock);
+		break;
+
+	case P_TASKID:
+		mutex_enter(&pidlock);
+		if (id == P_MYID) {
+			proc_t *p = curproc;
+			id = p->p_task->tk_tkid;
+		}
+
+		if ((tk = task_hold_by_id(id)) != NULL) {
+			ret = cpu_bind_task2(tk, ncpus, cpus, flags, &err);
+			mutex_exit(&pidlock);
+			task_rele(tk);
+		} else {
+			mutex_exit(&pidlock);
+			ret = ESRCH;
+		}
+		break;
+
+	case P_PROJID:
+		pp = curproc;
+		if (id == P_MYID)
+			id = curprojid();
+		if ((kpj = project_hold_by_id(id, pp->p_zone,
+		    PROJECT_HOLD_FIND)) == NULL) {
+			ret = ESRCH;
+		} else {
+			mutex_enter(&pidlock);
+			ret = cpu_bind_project2(kpj, ncpus, cpus,
+			    flags, &err);
+			mutex_exit(&pidlock);
+			project_rele(kpj);
+		}
+		break;
+
+	case P_ZONEID:
+		if (id == P_MYID)
+			id = getzoneid();
+
+		if ((zptr = zone_find_by_id(id)) == NULL) {
+			ret = ESRCH;
+		} else {
+			mutex_enter(&pidlock);
+			ret = cpu_bind_zone2(zptr, ncpus, cpus, flags, &err);
+			mutex_exit(&pidlock);
+			zone_rele(zptr);
+		}
+		break;
+
+	case P_CTID:
+		if (id == P_MYID)
+			id = PRCTID(curproc);
+
+		if ((ct = contract_type_ptr(process_type, id,
+		    curproc->p_zone->zone_uniqid)) == NULL) {
+			ret = ESRCH;
+		} else {
+			mutex_enter(&pidlock);
+			ret = cpu_bind_contract2(ct->ct_data,
+			    ncpus, cpus, flags, &err);
+			mutex_exit(&pidlock);
+			contract_rele(ct);
+		}
+		break;
+
+	case P_CPUID:
+		if (id == P_MYID || op != PBIND2_OP_CLEAR ||
+		    cpu_get(id) == NULL)
+			ret = EINVAL;
+		else
+			ret = cpu_unbind(id, B_TRUE);
+		break;
+
+	case P_ALL:
+		if (op != PBIND2_OP_CLEAR) {
+			ret = EINVAL;
+		} else {
+			int i;
+			cpu_t *cp = cpu_list;
+			do {
+				if ((cp->cpu_flags & CPU_EXISTS) == 0)
+					continue;
+				i = cpu_unbind(cp->cpu_id, B_TRUE);
+				if (ret == 0)
+					ret = i;
+			} while ((cp = cp->cpu_next) != cpu_list);
+		}
+		break;
+
+	default:
+		/*
+		 * Spec says this is invalid, even though we could
+		 * handle other idtypes.
+		 */
+		ret = EINVAL;
+		break;
+	}
+	mutex_exit(&cpu_lock);
+
+	/*
+	 * If no search error occurred, see if any permissions errors did.
+	 */
+	if (ret == 0)
+		ret = err;
+
+	if (ret == 0 && (op == PBIND2_OP_QUERY)) {
+		if (copyout((caddr_t)ncpus, (caddr_t)uncpus,
+			sizeof (size_t)) == -1)
+			ret = EFAULT;
+
+		if (copyout((caddr_t)cpus, (caddr_t)ucpus,
+		    ncpus * sizeof (processorid_t)) == -1)
+			ret = EFAULT;
+
+		if (copyout((caddr_t)flags, (caddr_t)uflags,
+			sizeof (uint32_t)) == -1)
+			ret = EFAULT;
+	}
+
+	return (ret ? set_errno(ret) : 0);
 }

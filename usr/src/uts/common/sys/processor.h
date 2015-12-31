@@ -111,6 +111,21 @@ typedef struct {
 #define	PBIND_QUERY_TYPE	-5	/* Return binding type */
 
 /*
+ * processor_bind2(2) operations.
+ */
+typedef enum pbind2_op {
+	PBIND2_OP_SET = 0,
+	PBIND2_OP_QUERY,
+	PBIND2_OP_CLEAR,
+} pbind2_op_t;
+
+/*
+ * proessor_bind2(2) flags.
+ */
+#define	PBIND2_HARD	0x0	/* prevents offlining CPU (default) */
+#define	PBIND2_SOFT	0x1	/* allows offlining CPU */
+
+/*
  * User-level system call interface prototypes
  */
 #ifndef _KERNEL

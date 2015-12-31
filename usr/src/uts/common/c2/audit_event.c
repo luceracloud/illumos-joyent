@@ -724,6 +724,9 @@ aui_null,	AUE_NULL,	aus_null,	/* 254 uucopy */
 		auf_null,	0,
 aui_null,	AUE_UMOUNT2,	aus_umount2,	/* 255 umount2 */
 		auf_null,	0
+/*
+ * Add processor_bind2 audit event.
+ */
 };
 
 uint_t num_syscall = sizeof (audit_s2e) / sizeof (struct audit_s2e);
