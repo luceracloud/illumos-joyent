@@ -210,6 +210,31 @@ cpu_bind_project(kproject_t *kpj, processorid_t bind, processorid_t *obind,
 }
 
 /*
+ * Bind all the processes in a project to set of CPUs.
+ */
+static int
+cpu_bind_project2(pbind2_op_t op, kproject_t *kpj, size_t *ncpus,
+    processorid_t *cpus, uchar_t *flags, int *error)
+{
+	proc_t *p;
+	int err = 0;
+	int i;
+
+	ASSERT(MUTEX_HELD(&pidlock));
+
+	for (p = practive; p != NULL; p = p->p_next) {
+		if (p->p_tlist == NULL)
+			continue;
+		if (p->p_task->tk_proj == kpj && !(p->p_flag & SSYS)) {
+			i = cpu_bind_process2(op, p, ncpus, cpus, flags, error);
+			if (err == 0)
+				err = i;
+		}
+	}
+	return (err);
+}
+
+/*
  * Bind all the processes in a zone to a CPU.
  */
 int
