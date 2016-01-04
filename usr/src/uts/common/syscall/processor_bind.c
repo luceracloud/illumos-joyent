@@ -260,6 +260,31 @@ cpu_bind_zone(zone_t *zptr, processorid_t bind, processorid_t *obind,
 }
 
 /*
+ * Bind all the processes in a zone to a set of CPUs.
+ */
+int
+cpu_bind_zone2(pbind2_op_t op, zone_t *zptr, size_t *ncpus,
+    processorid_t *cpus, uchar_t *flags, int *error)
+{
+	proc_t *p;
+	int err = 0;
+	int i;
+
+	ASSERT(MUTEX_HELD(&pidlock));
+
+	for (p = practive; p != NULL; p = p->p_next) {
+		if (p->p_tlist == NULL)
+			continue;
+		if (p->p_zone == zptr && !(p->p_flag & SSYS)) {
+			i = cpu_bind_process2(op, p, ncpus, cpus, flags, error);
+			if (err == 0)
+				err = i;
+		}
+	}
+	return (err);
+}
+
+/*
  * Bind all the processes in a process contract to a CPU.
  */
 int
@@ -277,6 +302,31 @@ cpu_bind_contract(cont_process_t *ctp, processorid_t bind, processorid_t *obind,
 			continue;
 		if (p->p_ct_process == ctp) {
 			i = cpu_bind_process(p, bind, obind, error);
+			if (err == 0)
+				err = i;
+		}
+	}
+	return (err);
+}
+
+/*
+ * Bind all the processes in a process contract to a set of CPUs.
+ */
+int
+cpu_bind_contract2(pbind2_op_t op, cont_process_t *ctp, size_t *ncpus,
+    processorid_t *cpus, uchar_t *flags, int *error)
+{
+	proc_t *p;
+	int err = 0;
+	int i;
+
+	ASSERT(MUTEX_HELD(&pidlock));
+
+	for (p = practive; p != NULL; p = p->p_next) {
+		if (p->p_tlist == NULL)
+			continue;
+		if (p->p_ct_process == ctp) {
+			i = cpu_bind_process2(op, p, ncpus, cpus, flags, error);
 			if (err == 0)
 				err = i;
 		}
