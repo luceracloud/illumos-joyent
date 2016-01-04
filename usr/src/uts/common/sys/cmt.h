@@ -112,6 +112,7 @@ int		pg_plat_cmt_rank(pg_cmt_t *, pg_cmt_t *);
  * CMT dispatcher policy
  */
 cpu_t		*cmt_balance(kthread_t *, cpu_t *);
+cpu_t		*cmt_balance2(kthread_t *, cpu_t *, size_t ncpus, short *cpus);
 
 /*
  * Power Aware Dispatcher Interfaces

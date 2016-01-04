@@ -227,3 +227,121 @@ next_level:
 
 	return (cp);
 }
+
+/*
+ * Same as cmt_balance2(), except for thread bound to CPU set.
+ */
+cpu_t *
+cmt_balance2(kthread_t *tp, cpu_t *cp, size_t ncpus, short *cpus)
+{
+	int		hint, i, cpu, nsiblings;
+	int		self = 0;
+	group_t		*cmt_pgs, *siblings;
+	pg_cmt_t	*pg, *pg_tmp, *tpg = NULL;
+	int		level = 0;
+	cpu_t		*newcp;
+	extern cmt_lgrp_t *cmt_root;
+
+	ASSERT(THREAD_LOCK_HELD(tp));
+	ASSERT(ncpus > 0);
+	ASSERT(cpus != NULL);
+
+	cmt_pgs = &cp->cpu_pg->cmt_pgs;
+
+	if (GROUP_SIZE(cmt_pgs) == 0)
+		return (cp);	/* nothing to do */
+
+	if (tp == curthread)
+		self = 1;
+
+	/*
+	 * Balance across siblings in the CPUs CMT lineage
+	 * If the thread is homed to the root lgroup, perform
+	 * top level balancing against other top level PGs
+	 * in the system. Otherwise, start with the default
+	 * top level siblings group, which is within the leaf lgroup
+	 */
+	pg = GROUP_ACCESS(cmt_pgs, level);
+	if (tp->t_lpl->lpl_lgrpid == LGRP_ROOTID)
+		siblings = &cmt_root->cl_pgs;
+	else
+		siblings = pg->cmt_siblings;
+
+	/*
+	 * Traverse down the lineage until we find a level that needs
+	 * balancing, or we get to the end.
+	 */
+	for (;;) {
+		nsiblings = GROUP_SIZE(siblings);	/* self inclusive */
+		if (nsiblings == 1)
+			goto next_level;
+
+		hint = CPU_PSEUDO_RANDOM() % nsiblings;
+
+		/*
+		 * Find a balancing candidate from among our siblings
+		 * "hint" is a hint for where to start looking
+		 */
+		i = hint;
+		do {
+			ASSERT(i < nsiblings);
+			pg_tmp = GROUP_ACCESS(siblings, i);
+
+			/*
+			 * The candidate must not be us, and must
+			 * have some CPU resources in the thread's
+			 * partition
+			 */
+			if (pg_tmp != pg &&
+			    bitset_in_set(&tp->t_cpupart->cp_cmt_pgs,
+			    ((pg_t *)pg_tmp)->pg_id)) {
+				tpg = pg_tmp;
+				break;
+			}
+
+			if (++i >= nsiblings)
+				i = 0;
+		} while (i != hint);
+
+		if (!tpg)
+			goto next_level; /* no candidates at this level */
+
+		/*
+		 * Decide if we should migrate from the current PG to a
+		 * target PG given a policy
+		 */
+		if (cmt_should_migrate(pg, tpg, pg->cmt_policy, self))
+			break;
+		tpg = NULL;
+
+next_level:
+		if (++level == GROUP_SIZE(cmt_pgs))
+			break;
+
+		pg = GROUP_ACCESS(cmt_pgs, level);
+		siblings = pg->cmt_siblings;
+	}
+
+	if (tpg) {
+		uint_t	tgt_size = GROUP_SIZE(&tpg->cmt_cpus_actv);
+
+		/*
+		 * Select an idle CPU from the target
+		 */
+		hint = CPU_PSEUDO_RANDOM() % tgt_size;
+		cpu = hint;
+		do {
+			newcp = GROUP_ACCESS(&tpg->cmt_cpus_actv, cpu);
+			if (newcp->cpu_part == tp->t_cpupart &&
+			    cpu_find(newcp->cpu_id, ncpus, cpus) == B_TRUE &&
+			    newcp->cpu_dispatch_pri == -1) {
+				cp = newcp;
+				break;
+			}
+			if (++cpu == tgt_size)
+				cpu = 0;
+		} while (cpu != hint);
+	}
+
+	return (cp);
+}

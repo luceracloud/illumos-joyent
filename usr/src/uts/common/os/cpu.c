@@ -2708,7 +2708,7 @@ cpu_bind_thread(kthread_id_t tp, processorid_t bind, processorid_t *obind,
  * Determine if cpu exists in the array of cpus. Only the first ncpus
  * in the array are searched.
  */
-static boolean_t
+boolean_t
 cpu_find(short cpu, size_t ncpus, short *cpus)
 {
 	for (int i = 0; i < ncpus; i++) {

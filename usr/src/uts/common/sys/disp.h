@@ -153,6 +153,8 @@ extern void		cpu_surrender(kthread_t *);
 extern void		kpreempt(int);
 extern struct cpu	*disp_lowpri_cpu(struct cpu *, struct lgrp_ld *, pri_t,
 			    struct cpu *);
+extern struct cpu	*disp_lowpri_cpu2(struct cpu *, size_t ncpus,
+    short *cpus, struct lgrp_ld *, pri_t, struct cpu *);
 extern int		disp_bound_threads(struct cpu *, int);
 extern int		disp_bound_anythreads(struct cpu *, int);
 extern int		disp_bound_partition(struct cpu *, int);

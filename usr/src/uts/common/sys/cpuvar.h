@@ -708,6 +708,7 @@ int	cpu_configure(int);
 int	cpu_unconfigure(int);
 void	cpu_destroy_bound_threads(cpu_t *cp);
 
+extern boolean_t cpu_find(short cpu, size_t ncpus, short *cpus);
 extern int cpu_bind_thread(kthread_t *tp, processorid_t bind,
     processorid_t *obind, int *error);
 extern int cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,

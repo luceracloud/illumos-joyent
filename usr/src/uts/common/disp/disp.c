@@ -1222,7 +1222,7 @@ setbackdq(kthread_t *tp)
 
 	self = (tp == curthread);
 
-	if (tp->t_bound_cpu || tp->t_weakbound_cpu)
+	if (tp->t_bound_cpu || tp->t_bind_cpus || tp->t_weakbound_cpu)
 		bound = 1;
 	else
 		bound = 0;
@@ -1293,6 +1293,77 @@ setbackdq(kthread_t *tp)
 			    tp->t_lpl, tp->t_pri, NULL);
 		}
 		ASSERT((cp->cpu_flags & CPU_QUIESCED) == 0);
+	} else if (bound && tp->t_bind_ncpus > 0) {
+		/*
+		 * Bound to a CPU set.
+		 */
+		if (tpri >= kpqpri) {
+			setkpdq(tp, SETKP_BACK);
+			return;
+		}
+
+		/*
+		 * We'll generally let this thread continue to run where
+		 * it last ran...but will consider migration if:
+		 * - We thread probably doesn't have much cache warmth.
+		 * - The CPU where it last ran is the target of an offline
+		 *   request.
+		 * - The thread last ran outside it's home lgroup.
+		 */
+		if ((!THREAD_HAS_CACHE_WARMTH(tp)) ||
+		    (tp->t_cpu == cpu_inmotion)) {
+			cp = disp_lowpri_cpu2(tp->t_cpu, tp->t_bind_ncpus,
+			    tp->t_bind_cpus, tp->t_lpl, tpri, NULL);
+		} else if (!LGRP_CONTAINS_CPU(tp->t_lpl->lpl_lgrp, tp->t_cpu)) {
+			cp = disp_lowpri_cpu2(tp->t_cpu, tp->t_bind_ncpus,
+			    tp->t_bind_cpus, tp->t_lpl, tpri,
+			    self ? tp->t_cpu : NULL);
+		} else {
+			cp = tp->t_cpu;
+		}
+
+		if (tp->t_cpupart == cp->cpu_part) {
+			int	qlen;
+
+			/*
+			 * Perform any CMT load balancing
+			 */
+			cp = cmt_balance2(tp, cp, tp->t_bind_ncpus,
+			    tp->t_bind_cpus);
+
+			/*
+			 * Balance across the run queues
+			 */
+			qlen = RUNQ_LEN(cp, tpri);
+			if (tpri >= RUNQ_MATCH_PRI &&
+			    !(tp->t_schedflag & TS_RUNQMATCH))
+				qlen -= RUNQ_MAX_DIFF;
+			if (qlen > 0) {
+				cpu_t *newcp;
+
+				if (tp->t_lpl->lpl_lgrpid == LGRP_ROOTID) {
+					newcp = cp->cpu_next_part;
+				} else if ((newcp = cp->cpu_next_lpl) == cp) {
+					newcp = cp->cpu_next_part;
+				}
+
+				if (RUNQ_LEN(newcp, tpri) < qlen) {
+					DTRACE_PROBE3(runq__balance,
+					    kthread_t *, tp,
+					    cpu_t *, cp, cpu_t *, newcp);
+					cp = newcp;
+				}
+			}
+		} else {
+			/*
+			 * Migrate to a cpu in the new partition.
+			 */
+			cp = disp_lowpri_cpu2(tp->t_cpupart->cp_cpulist,
+			    tp->t_bind_ncpus, tp->t_bind_cpus,
+			    tp->t_lpl, tp->t_pri, NULL);
+		}
+		ASSERT((cp->cpu_flags & CPU_QUIESCED) == 0);
+
 	} else {
 		/*
 		 * It is possible that t_weakbound_cpu != t_bound_cpu (for
@@ -1303,6 +1374,7 @@ setbackdq(kthread_t *tp)
 		cp = tp->t_weakbound_cpu ?
 		    tp->t_weakbound_cpu : tp->t_bound_cpu;
 	}
+
 	/*
 	 * A thread that is ONPROC may be temporarily placed on the run queue
 	 * but then chosen to run again by disp.  If the thread we're placing on
@@ -2670,6 +2742,136 @@ disp_lowpri_cpu(cpu_t *hint, lpl_t *lpl, pri_t tpri, cpu_t *curcpu)
 				if (cp->cpu_chosen_level > cpupri)
 					cpupri = cp->cpu_chosen_level;
 				if (cpupri < bestpri) {
+					if (CPU_IDLING(cpupri)) {
+						ASSERT((cp->cpu_flags &
+						    CPU_QUIESCED) == 0);
+						return (cp);
+					}
+					bestcpu = cp;
+					bestpri = cpupri;
+				}
+			} while ((cp = cp->cpu_next_lpl) != cpstart);
+		}
+
+		if (bestcpu && (tpri > bestpri)) {
+			ASSERT((bestcpu->cpu_flags & CPU_QUIESCED) == 0);
+			return (bestcpu);
+		}
+		if (besthomecpu == NULL)
+			besthomecpu = bestcpu;
+		/*
+		 * Add the lgrps we just considered to the "done" set
+		 */
+		klgrpset_or(done, cur_set);
+
+	} while ((lpl_iter = lpl_iter->lpl_parent) != NULL);
+
+	/*
+	 * The specified priority isn't high enough to run immediately
+	 * anywhere, so just return the best CPU from the home lgroup.
+	 */
+	ASSERT((besthomecpu->cpu_flags & CPU_QUIESCED) == 0);
+	return (besthomecpu);
+}
+
+/*
+ * Same as disp_lowpri_cpu(), except for threads bound to a CPU set.
+ */
+cpu_t *
+disp_lowpri_cpu2(cpu_t *hint, size_t ncpus, short *cpus,
+    lpl_t *lpl, pri_t tpri, cpu_t *curcpu)
+{
+	cpu_t	*bestcpu;
+	cpu_t	*besthomecpu;
+	cpu_t   *cp, *cpstart;
+
+	pri_t   bestpri;
+	pri_t   cpupri;
+
+	klgrpset_t	done;
+	klgrpset_t	cur_set;
+
+	lpl_t		*lpl_iter, *lpl_leaf;
+	int		i;
+
+	/*
+	 * Scan for a CPU currently running the lowest priority thread.
+	 * Cannot get cpu_lock here because it is adaptive.
+	 * We do not require lock on CPU list.
+	 */
+	ASSERT(hint != NULL);
+	ASSERT(lpl != NULL);
+	ASSERT(lpl->lpl_ncpu > 0);
+	ASSERT(ncpus > 0);
+	ASSERT(cpus != NULL);
+
+	/*
+	 * First examine local CPUs. Note that it's possible the hint CPU
+	 * passed in in remote to the specified home lgroup. If our priority
+	 * isn't sufficient enough such that we can run immediately at home,
+	 * then examine CPUs remote to our home lgroup.
+	 * We would like to give preference to CPUs closest to "home".
+	 * If we can't find a CPU where we'll run at a given level
+	 * of locality, we expand our search to include the next level.
+	 */
+	bestcpu = besthomecpu = NULL;
+	klgrpset_clear(done);
+	/* start with lpl we were passed */
+
+	lpl_iter = lpl;
+
+	do {
+
+		bestpri = SHRT_MAX;
+		klgrpset_clear(cur_set);
+
+		for (i = 0; i < lpl_iter->lpl_nrset; i++) {
+			lpl_leaf = lpl_iter->lpl_rset[i];
+			if (klgrpset_ismember(done, lpl_leaf->lpl_lgrpid))
+				continue;
+
+			klgrpset_add(cur_set, lpl_leaf->lpl_lgrpid);
+
+			if (hint->cpu_lpl == lpl_leaf)
+				cp = cpstart = hint;
+			else
+				cp = cpstart = lpl_leaf->lpl_cpus;
+
+			do {
+				/*
+				 * Skip any CPU that is not a member
+				 * of the thread's bound set.
+				 */
+				if (cpu_find((short)cp->cpu_id,
+					ncpus, cpus) == B_FALSE)
+					continue;
+				/*
+				 * Dertermine the priority of the
+				 * current CPU.
+				 */
+				if (cp == curcpu)
+					cpupri = -1;
+				else if (cp == cpu_inmotion)
+					cpupri = SHRT_MAX;
+				else
+					cpupri = cp->cpu_dispatch_pri;
+
+				if (cp->cpu_disp->disp_maxrunpri > cpupri)
+					cpupri = cp->cpu_disp->disp_maxrunpri;
+				if (cp->cpu_chosen_level > cpupri)
+					cpupri = cp->cpu_chosen_level;
+
+				/*
+				 * If priority of current CPU
+				 * is lower than previous best then
+				 * set new best.
+				 */
+				if (cpupri < bestpri) {
+					/*
+					 * If the current CPU is idle
+					 * and part of the thread's
+					 * bound set then run on it.
+					 */
 					if (CPU_IDLING(cpupri)) {
 						ASSERT((cp->cpu_flags &
 						    CPU_QUIESCED) == 0);
