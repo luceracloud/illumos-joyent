@@ -498,7 +498,7 @@ extern "C" {
 #define	SYS_uucopy		254
 #define	SYS_umount2		255
 
-#define SYS_processor_bind2	256
+#define	SYS_processor_bind2	256
 
 #ifndef	_ASM
 

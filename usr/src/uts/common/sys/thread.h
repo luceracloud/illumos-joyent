@@ -444,7 +444,7 @@ typedef struct _kthread {
 #define	TB_PSET_IS_SOFT(t)		((t)->t_bindflag & TB_PSET_SOFT)
 
 #define	TB2_CPU_HARD	0x00
-#define TB2_CPU_SOFT	0x01
+#define	TB2_CPU_SOFT	0x01
 #define	TB2_CPU_IS_SOFT(t)		((t)->t_bindflag2 & TB2_CPU_SOFT)
 #define	TB2_CPU_IS_HARD(t)		(!TB2_CPU_IS_SOFT(t))
 
