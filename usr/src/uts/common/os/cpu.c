@@ -2709,7 +2709,7 @@ cpu_bind_thread(kthread_id_t tp, processorid_t bind, processorid_t *obind,
  * in the array are searched.
  */
 static boolean_t
-cpu_find(processorid_t cpu, size_t ncpus, processorid_t *cpus)
+cpu_find(short cpu, size_t ncpus, short *cpus)
 {
 	for (int i = 0; i < ncpus; i++) {
 		if (cpu == cpus[i])
@@ -2724,7 +2724,7 @@ cpu_find(processorid_t cpu, size_t ncpus, processorid_t *cpus)
  */
 int
 cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,
-    processorid_t *cpus, uchar_t *flags, int *error)
+    short *cpus, uchar_t *flags, int *error)
 {
 	cpu_t		*cp = NULL;
 
@@ -2794,7 +2794,7 @@ cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,
 		 * Verify ALL cpus are valid and in the thread's
 		 * assigned partition.
 		 */
-		for (int i = 0; i < ncpus; i ++) {
+		for (size_t i = 0; i < *ncpus; i ++) {
 			cp = cpu_get((processorid_t)cpus[i]);
 			if (cp == NULL || tp->t_cpupart != cp->cpu_part) {
 				*error = EINVAL;
@@ -2910,7 +2910,7 @@ cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,
 				 */
 				ASSERT(
 				    cpu_find(tp->t_disp_queue->disp_cpu->cpu_id,
-					ncpus, cpus) == B_TRUE ||
+					*ncpus, cpus) == B_TRUE ||
 				    tp->t_weakbound_cpu == ocp ||
 				    (tp->t_schedflag & (TS_LOAD | TS_ON_SWAPQ))
 				    != TS_LOAD);
@@ -3107,15 +3107,14 @@ cpu_unbind(processorid_t cpu, boolean_t unbind_all_threads)
  * CPU. Otherwise unbind all soft-bound user threads.
  */
 int
-cpu_unbind2(processorid_t cpu, boolean_t unbind_all_threads)
+cpu_unbind2(short cpu, boolean_t unbind_all_threads)
 {
-	processorid_t obind;
 	kthread_t *tp;
 	int ret = 0;
 	proc_t *pp;
 	int err, berr = 0;
 	size_t ncpus;
-	processorid_t *cpus;
+	short *cpus;
 	uchar_t flags;
 
 	ASSERT(MUTEX_HELD(&cpu_lock));
@@ -3138,9 +3137,6 @@ cpu_unbind2(processorid_t cpu, boolean_t unbind_all_threads)
 				tp->t_bind_ncpus, tp->t_bind_cpus) == B_FALSE)
 				continue;
 
-			/* if (tp->t_bind_cpu != cpu) */
-			/* 	continue; */
-
 			/*
 			 * Skip threads with hard binding when
 			 * `unbind_all_threads' is not specified.
@@ -3155,28 +3151,28 @@ cpu_unbind2(processorid_t cpu, boolean_t unbind_all_threads)
 			cpus = tp->t_bind_cpus;
 			flags = tp->t_bindflag2;
 
-			int new_ncpus = ncpus - 1;
-			processorid_t *new_cpus =
-			    kmem_alloc(new_ncpus * sizeof (processorid_t),
-				KM_SLEEP);
+			size_t new_ncpus = ncpus - 1;
+			short *new_cpus =
+			    kmem_alloc(new_ncpus * sizeof (short), KM_SLEEP);
 
 			/*
 			 * Iterate current list (i), copy all to the
 			 * new list (j) except the CPU being unbound.
 			 */
-			for (int i = 0, j = 0; i < ncpus; i++) {
+			int i, j;
+			for (i = 0, j = 0; i < ncpus; i++) {
 				if (cpus[i] != cpu)
 					new_cpus[j++] = cpus[i];
 			}
-			ASSERT(j == (i - 1))
+			ASSERT(j == (i - 1));
 
 			tp->t_bind_ncpus = new_ncpus;
 			tp->t_bind_cpus = new_cpus;
 
-			kmem_free(cpus, ncpus * sizeof (processorid_t));
+			kmem_free(cpus, ncpus * sizeof (short));
 
-			err = cpu_bind_thread2(PBIND2_CLEAR, tp, &new_ncpus,
-			    new_cpus, flags, &berr);
+			err = cpu_bind_thread2(PBIND2_OP_CLEAR, tp, &new_ncpus,
+			    new_cpus, &flags, &berr);
 			if (ret == 0)
 				ret = err;
 		} while ((tp = tp->t_forw) != pp->p_tlist);

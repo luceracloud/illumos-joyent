@@ -83,7 +83,7 @@ cpu_bind_process(proc_t *pp, processorid_t bind, processorid_t *obind,
  */
 static int
 cpu_bind_process2(pbind2_op_t op, proc_t *pp, size_t *ncpus,
-    processorid_t *cpus, uchar_t *flags, int *error)
+    short *cpus, uchar_t *flags, int *error)
 {
 	kthread_t	*tp;
 	kthread_t	*fp;
@@ -161,7 +161,7 @@ cpu_bind_task(task_t *tk, processorid_t bind, processorid_t *obind,
  * Bind all the processes of a task to a set of CPUs.
  */
 static int
-cpu_bind_task2(pbind2_op_t op, task_t *tk, size_t *ncpus, processorid_t *cpus,
+cpu_bind_task2(pbind2_op_t op, task_t *tk, size_t *ncpus, short *cpus,
     uchar_t *flags, int *error)
 {
 	proc_t	*p;
@@ -214,7 +214,7 @@ cpu_bind_project(kproject_t *kpj, processorid_t bind, processorid_t *obind,
  */
 static int
 cpu_bind_project2(pbind2_op_t op, kproject_t *kpj, size_t *ncpus,
-    processorid_t *cpus, uchar_t *flags, int *error)
+    short *cpus, uchar_t *flags, int *error)
 {
 	proc_t *p;
 	int err = 0;
@@ -264,7 +264,7 @@ cpu_bind_zone(zone_t *zptr, processorid_t bind, processorid_t *obind,
  */
 int
 cpu_bind_zone2(pbind2_op_t op, zone_t *zptr, size_t *ncpus,
-    processorid_t *cpus, uchar_t *flags, int *error)
+    short *cpus, uchar_t *flags, int *error)
 {
 	proc_t *p;
 	int err = 0;
@@ -314,7 +314,7 @@ cpu_bind_contract(cont_process_t *ctp, processorid_t bind, processorid_t *obind,
  */
 int
 cpu_bind_contract2(pbind2_op_t op, cont_process_t *ctp, size_t *ncpus,
-    processorid_t *cpus, uchar_t *flags, int *error)
+    short *cpus, uchar_t *flags, int *error)
 {
 	proc_t *p;
 	int err = 0;
@@ -561,11 +561,14 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 	 * If the binding is being set (PBIND2_OP_SET) then this
 	 * memory lives until a clear (PBIND2_OP_CLEAR) operation is
 	 * performed.
+	 *
+	 * The userland interfaces uses processorid_t (int) to
+	 * represent a CPU identifier. The kernel uses short. Thus the
+	 * conversion here.
 	 */
-	processorid_t *cpus = kmem_zalloc(ncpus * sizeof (processorid_t),
-	    KM_SLEEP);
+	short *cpus = kmem_zalloc(ncpus * sizeof (short), KM_SLEEP);
 
-	if (copyin(ucpus, cpus, ncpus * sizeof (processorid_t)) == -1)
+	if (copyin(ucpus, cpus, ncpus * sizeof (short)) == -1)
 		return (set_errno(EFAULT));
 
 	/*
@@ -581,7 +584,7 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		 * Verify all CPU identifiers are valid.
 		 */
 		for (size_t i = 0; i < ncpus; i++) {
-			if ((cp = cpu_get(cpus[i])) == NULL ||
+			if ((cp = cpu_get((processorid_t)cpus[i])) == NULL ||
 			    (cp->cpu_flags & (CPU_QUIESCED | CPU_OFFLINE)))
 				ret = EINVAL;
 			else if ((cp->cpu_flags & CPU_READY) == 0)
@@ -750,10 +753,10 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 	if (ret == 0 && (op == PBIND2_OP_QUERY)) {
 
 		if (copyout((caddr_t)cpus, (caddr_t)ucpus,
-		    ncpus * sizeof (processorid_t)) == -1)
+		    ncpus * sizeof (short)) == -1)
 			ret = EFAULT;
 
-		kmem_free(cpus, ncpus * sizeof (processorid_t));
+		kmem_free(cpus, ncpus * sizeof (short));
 
 		*uncpus = ncpus;
 		*uflags = flags;
