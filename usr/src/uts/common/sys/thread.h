@@ -121,6 +121,9 @@ typedef struct _kthread {
 	struct cpu *t_bound_cpu; /* cpu bound to, or NULL if not bound */
 	short	t_affinitycnt;	/* nesting level of kernel affinity-setting */
 	short	t_bind_cpu;	/* user-specified CPU binding (-1 if none) */
+	short	*t_bind_cpus;	/* user CPU binding */
+	ushort_t t_bindflag2;	/* user CPU binding flags */
+	ushort_t t_bind_ncpus;	/* user CPU binding, 0 if none */
 	ushort_t t_flag;		/* modified only by current thread */
 	ushort_t t_proc_flag;	/* modified holding ttproc(t)->p_lock */
 	ushort_t t_schedflag;	/* modified holding thread_lock(t) */

@@ -2704,6 +2704,231 @@ cpu_bind_thread(kthread_id_t tp, processorid_t bind, processorid_t *obind,
 	return (0);
 }
 
+/*
+ * Determine if cpu exists in the array of cpus. Only the first ncpus
+ * in the array are searched.
+ */
+static boolean_t
+cpu_find(processorid_t cpu, size_t ncpus, processorid_t *cpus)
+{
+	for (int i = 0; i < ncpus; i++) {
+		if (cpu == cpus[i])
+			return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
+/*
+ * Bind a thread to the CPUs requested.
+ */
+int
+cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,
+    processorid_t *cpus, uchar_t *flags, int *error)
+{
+	cpu_t		*cp = NULL;
+
+	ASSERT(MUTEX_HELD(&cpu_lock));
+	ASSERT(MUTEX_HELD(&ttoproc(tp)->p_lock));
+
+	thread_lock(tp);
+
+	/*
+	 * Record old binding, but change the obind, which was initialized
+	 * to PBIND_NONE, only if this thread has a binding.  This avoids
+	 * reporting PBIND_NONE for a process when some LWPs are bound.
+	 */
+	/* binding = tp->t_bind_cpu; */
+	/* if (binding != PBIND_NONE) */
+	/* 	*obind = binding;	/\* record old binding *\/ */
+
+	switch (op) {
+	case PBIND2_OP_QUERY:
+		*ncpus = *tp->t_bind_ncpus;
+		*cpus = *tp->t_bind_cpus;
+		*flags = *tp->t_bindflag2;
+		/* Just return the old binding */
+		thread_unlock(tp);
+		return (0);
+
+	/* case PBIND_SOFT: */
+	/* 	/\* */
+	/* 	 *  Set soft binding for this thread and return the actual */
+	/* 	 *  binding */
+	/* 	 *\/ */
+	/* 	TB_CPU_SOFT_SET(tp); */
+	/* 	thread_unlock(tp); */
+	/* 	return (0); */
+
+	/* case PBIND_HARD: */
+	/* 	/\* */
+	/* 	 *  Set hard binding for this thread and return the actual */
+	/* 	 *  binding */
+	/* 	 *\/ */
+	/* 	TB_CPU_HARD_SET(tp); */
+	/* 	thread_unlock(tp); */
+	/* 	return (0); */
+
+	default:
+		break;
+	}
+
+	/*
+	 * If this thread/LWP cannot be bound because of permission
+	 * problems, just note that and return success so that the
+	 * other threads/LWPs will be bound.  This is the way
+	 * processor_bind() is defined to work.
+	 *
+	 * Binding will get EPERM if the thread is of system class
+	 * or hasprocperm() fails.
+	 */
+	if (tp->t_cid == 0 || !hasprocperm(tp->t_cred, CRED())) {
+		*error = EPERM;
+		thread_unlock(tp);
+		return (0);
+	}
+
+	/* binding = bind; */
+	if (op != PBIND2_OP_CLEAR) {
+		/*
+		 * Verify ALL cpus are valid and in the thread's
+		 * assigned partition.
+		 */
+		for (int i = 0; i < ncpus; i ++) {
+			cp = cpu_get((processorid_t)cpus[i]);
+			if (cp == NULL || tp->t_cpupart != cp->cpu_part) {
+				*error = EINVAL;
+				thread_unlock(tp);
+				return (0);
+			}
+		}
+	}
+
+	tp->t_bind_cpus = cpus;	/* set new binding */
+	tp->t_bind_ncpus = *ncpus;
+	tp->t_bindflag2 = *flags;
+
+	/*
+	 * If there is no system-set reason for affinity, set
+	 * the t_bound_cpu field to reflect the binding.
+	 */
+	if (tp->t_affinitycnt == 0) {
+		if (op == PBIND2_OP_CLEAR) {
+			/*
+			 * We may need to adjust disp_max_unbound_pri
+			 * since we're becoming unbound.
+			 */
+			disp_adjust_unbound_pri(tp);
+
+			tp->t_bind_cpus = NULL;
+			tp->t_bind_ncpus = 0;
+			tp->t_bindflag2 = 0;
+
+			/*
+			 * TODO: perhaps use t_bound_cpu for 1 CPU
+			 * optimization.
+			 */
+			/* tp->t_bound_cpu = NULL;	/\* set new binding *\/ */
+
+			/*
+			 * Move thread to lgroup with strongest affinity
+			 * after unbinding
+			 */
+			if (tp->t_lgrp_affinity)
+				lgrp_move_thread(tp,
+				    lgrp_choose(tp, tp->t_cpupart), 1);
+
+			if (tp->t_state == TS_ONPROC &&
+			    tp->t_cpu->cpu_part != tp->t_cpupart)
+				cpu_surrender(tp);
+		} else {
+			lpl_t	*lpl;
+
+			tp->t_bind_cpus = cpus;
+			tp->t_bind_ncpus = *ncpus;
+			tp->t_bindflag2 = *flags;
+
+			/*
+			 * TODO: perhaps use t_bound_cpu for 1 CPU
+			 * optimization.
+			 */
+			/* tp->t_bound_cpu = cp; */
+
+			ASSERT(cp->cpu_lpl != NULL);
+
+			/*
+			 * Set home to lgroup with most affinity containing CPU
+			 * that thread is being bound or minimum bounding
+			 * lgroup if no affinities set
+			 */
+			if (tp->t_lgrp_affinity)
+				lpl = lgrp_affinity_best(tp, tp->t_cpupart,
+				    LGRP_NONE, B_FALSE);
+			else
+				lpl = cp->cpu_lpl;
+
+			if (tp->t_lpl != lpl) {
+				/* can't grab cpu_lock */
+				lgrp_move_thread(tp, lpl, 1);
+			}
+
+			/*
+			 * Make the thread switch to the bound CPU.
+			 * If the thread is runnable, we need to
+			 * requeue it even if t_cpu is already set
+			 * to the right CPU, since it may be on a
+			 * kpreempt queue and need to move to a local
+			 * queue.  We could check t_disp_queue to
+			 * avoid unnecessary overhead if it's already
+			 * on the right queue, but since this isn't
+			 * a performance-critical operation it doesn't
+			 * seem worth the extra code and complexity.
+			 *
+			 * If the thread is weakbound to the cpu then it will
+			 * resist the new binding request until the weak
+			 * binding drops.  The cpu_surrender or requeueing
+			 * below could be skipped in such cases (since it
+			 * will have no effect), but that would require
+			 * thread_allowmigrate to acquire thread_lock so
+			 * we'll take the very occasional hit here instead.
+			 */
+			if (tp->t_state == TS_ONPROC) {
+				cpu_surrender(tp);
+			} else if (tp->t_state == TS_RUN) {
+				cpu_t *ocp = tp->t_cpu;
+
+				(void) dispdeq(tp);
+				setbackdq(tp);
+				/*
+				 * Assert either:
+				 *
+				 * o Dispatched to a CPU in the binding set,
+				 *
+				 * o Running on the weakbound CPU,
+				 *
+				 * o Swapped out or on swap queue.
+				 */
+				ASSERT(
+				    cpu_find(tp->t_disp_queue->disp_cpu->cpu_id,
+					ncpus, cpus) == B_TRUE ||
+				    tp->t_weakbound_cpu == ocp ||
+				    (tp->t_schedflag & (TS_LOAD | TS_ON_SWAPQ))
+				    != TS_LOAD);
+			}
+		}
+	}
+
+	/*
+	 * Our binding has changed; set TP_CHANGEBIND.
+	 */
+	tp->t_proc_flag |= TP_CHANGEBIND;
+	aston(tp);
+
+	thread_unlock(tp);
+
+	return (0);
+}
+
 #if CPUSET_WORDS > 1
 
 /*

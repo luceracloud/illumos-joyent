@@ -79,6 +79,58 @@ cpu_bind_process(proc_t *pp, processorid_t bind, processorid_t *obind,
 }
 
 /*
+ * Bind all the threads of a process to a set of CPUs.
+ */
+static int
+cpu_bind_process2(pbind2_op_t op, proc_t *pp, size_t *ncpus,
+    processorid_t *cpus, uchar_t *flags, int *error)
+{
+	kthread_t	*tp;
+	kthread_t	*fp;
+	int		err = 0;
+	int		i;
+
+	ASSERT(MUTEX_HELD(&pidlock));
+
+	/* skip kernel processes */
+	if (pp->p_flag & SSYS) {
+		*ncpus = 0;
+		/*
+		 * TODO: pass **cpus so that you can set pointer to
+		 * NULL?
+		 */
+		*error = ENOTSUP;
+		return (0);
+	}
+
+	mutex_enter(&pp->p_lock);
+	tp = pp->p_tlist;
+	if (tp != NULL) {
+		fp = tp;
+		do {
+			/*
+			 * TODO: Only the last thread will cause an
+			 * error to propogate? Does cpu_bind_thread2
+			 * set *error = 0 on success?
+			 *
+			 * Answer: No, it only modifies the value if
+			 * there is an error. Still, this is a fragile
+			 * interface. Either we should document it or,
+			 * better yet, save any errors locally in this
+			 * loop.
+			 */
+			i = cpu_bind_thread2(op, tp, ncpus, cpus, flags, error);
+			if (err == 0)
+				err = i;
+		} while ((tp = tp->t_forw) != fp);
+	}
+
+	mutex_exit(&pp->p_lock);
+	return (err);
+}
+
+
+/*
  * Bind all the processes of a task to a CPU.
  */
 static int
@@ -385,7 +437,7 @@ processor_bind(idtype_t idtype, id_t id, processorid_t bind,
 
 int
 processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
-    processorid_t *ucpus, uint32_t *uflags)
+    processorid_t *ucpus, uchar_t *uflags)
 {
 	int		ret = 0;
 	int		err = 0;
@@ -398,7 +450,16 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 	contract_t	*ct;
 
 	size_t ncpus = *uncpus;
-	uint32_t flags = *uflags;
+	uchar_t flags = *uflags;
+	/*
+	 * If the binding is being queried (PBIND2_OP_QUERY) then this
+	 * memory is freed at the end of this function. After the data
+	 * has been copied into user VM.
+	 *
+	 * If the binding is being set (PBIND2_OP_SET) then this
+	 * memory lives until a clear (PBIND2_OP_CLEAR) operation is
+	 * performed.
+	 */
 	processorid_t *cpus = kmem_zalloc(ncpus * sizeof (processorid_t),
 	    KM_SLEEP);
 
@@ -441,16 +502,16 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		pp = curproc;
 		mutex_enter(&pp->p_lock);
 		if (id == P_MYID) {
-			ret = cpu_bind_thread2(curthread, ncpus, cpus,
-			    flags, &err);
+			ret = cpu_bind_thread2(op, curthread, &ncpus, cpus,
+			    &flags, &err);
 		} else {
 			int	found = 0;
 
 			tp = pp->p_tlist;
 			do {
 				if (tp->t_tid == id) {
-					ret = cpu_bind_thread2(tp, ncpus,
-					    cpus, flags, &err);
+					ret = cpu_bind_thread2(op, tp, &ncpus,
+					    cpus, &flags, &err);
 					found = 1;
 					break;
 				}
@@ -468,10 +529,10 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		 */
 		mutex_enter(&pidlock);
 		if (id == P_MYID) {
-			ret = cpu_bind_process2(curproc, ncpus, cpus,
-			    flags, &err);
+			ret = cpu_bind_process2(op, curproc, &ncpus, cpus,
+			    &flags, &err);
 		} else if ((pp = prfind(id)) != NULL) {
-			ret = cpu_bind_process2(pp, ncpus, cpus, flags,
+			ret = cpu_bind_process2(op, pp, &ncpus, cpus, &flags,
 			    &err);
 		} else {
 			ret = ESRCH;
@@ -487,7 +548,7 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		}
 
 		if ((tk = task_hold_by_id(id)) != NULL) {
-			ret = cpu_bind_task2(tk, ncpus, cpus, flags, &err);
+			ret = cpu_bind_task2(op, tk, &ncpus, cpus, &flags, &err);
 			mutex_exit(&pidlock);
 			task_rele(tk);
 		} else {
@@ -505,8 +566,8 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 			ret = ESRCH;
 		} else {
 			mutex_enter(&pidlock);
-			ret = cpu_bind_project2(kpj, ncpus, cpus,
-			    flags, &err);
+			ret = cpu_bind_project2(op, kpj, &ncpus, cpus,
+			    &flags, &err);
 			mutex_exit(&pidlock);
 			project_rele(kpj);
 		}
@@ -520,7 +581,8 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 			ret = ESRCH;
 		} else {
 			mutex_enter(&pidlock);
-			ret = cpu_bind_zone2(zptr, ncpus, cpus, flags, &err);
+			ret = cpu_bind_zone2(op, zptr, &ncpus, cpus, &flags,
+			    &err);
 			mutex_exit(&pidlock);
 			zone_rele(zptr);
 		}
@@ -535,8 +597,8 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 			ret = ESRCH;
 		} else {
 			mutex_enter(&pidlock);
-			ret = cpu_bind_contract2(ct->ct_data,
-			    ncpus, cpus, flags, &err);
+			ret = cpu_bind_contract2(op, ct->ct_data,
+			    &ncpus, cpus, &flags, &err);
 			mutex_exit(&pidlock);
 			contract_rele(ct);
 		}
@@ -547,7 +609,7 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		    cpu_get(id) == NULL)
 			ret = EINVAL;
 		else
-			ret = cpu_unbind(id, B_TRUE);
+			ret = cpu_unbind2(id, B_TRUE);
 		break;
 
 	case P_ALL:
@@ -559,7 +621,7 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 			do {
 				if ((cp->cpu_flags & CPU_EXISTS) == 0)
 					continue;
-				i = cpu_unbind(cp->cpu_id, B_TRUE);
+				i = cpu_unbind2(cp->cpu_id, B_TRUE);
 				if (ret == 0)
 					ret = i;
 			} while ((cp = cp->cpu_next) != cpu_list);
@@ -583,17 +645,15 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		ret = err;
 
 	if (ret == 0 && (op == PBIND2_OP_QUERY)) {
-		if (copyout((caddr_t)ncpus, (caddr_t)uncpus,
-			sizeof (size_t)) == -1)
-			ret = EFAULT;
 
 		if (copyout((caddr_t)cpus, (caddr_t)ucpus,
 		    ncpus * sizeof (processorid_t)) == -1)
 			ret = EFAULT;
 
-		if (copyout((caddr_t)flags, (caddr_t)uflags,
-			sizeof (uint32_t)) == -1)
-			ret = EFAULT;
+		kmem_free(cpus, ncpus * sizeof (processorid_t));
+
+		*uncpus = ncpus;
+		*uflags = flags;
 	}
 
 	return (ret ? set_errno(ret) : 0);
