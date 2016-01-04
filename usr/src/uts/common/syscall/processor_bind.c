@@ -158,6 +158,33 @@ cpu_bind_task(task_t *tk, processorid_t bind, processorid_t *obind,
 }
 
 /*
+ * Bind all the processes of a task to a set of CPUs.
+ */
+static int
+cpu_bind_task2(pbind2_op_t op, task_t *tk, size_t *ncpus, processorid_t *cpus,
+    uchar_t *flags, int *error)
+{
+	proc_t	*p;
+	int	err = 0;
+	int	i;
+
+	ASSERT(MUTEX_HELD(&pidlock));
+
+	if ((p = tk->tk_memb_list) == NULL)
+		return (ESRCH);
+
+	do {
+		if (!(p->p_flag & SSYS)) {
+			i = cpu_bind_process2(op, p, ncpus, cpus, flags, error);
+			if (err == 0)
+				err = i;
+		}
+	} while ((p = p->p_tasknext) != tk->tk_memb_list);
+
+	return (err);
+}
+
+/*
  * Bind all the processes in a project to a CPU.
  */
 static int
@@ -548,7 +575,8 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		}
 
 		if ((tk = task_hold_by_id(id)) != NULL) {
-			ret = cpu_bind_task2(op, tk, &ncpus, cpus, &flags, &err);
+			ret = cpu_bind_task2(op, tk, &ncpus, cpus,
+			    &flags, &err);
 			mutex_exit(&pidlock);
 			task_rele(tk);
 		} else {
