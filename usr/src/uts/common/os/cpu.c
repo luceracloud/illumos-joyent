@@ -2744,9 +2744,9 @@ cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,
 
 	switch (op) {
 	case PBIND2_OP_QUERY:
-		*ncpus = *tp->t_bind_ncpus;
+		*ncpus = tp->t_bind_ncpus;
 		*cpus = *tp->t_bind_cpus;
-		*flags = *tp->t_bindflag2;
+		*flags = tp->t_bindflag2;
 		/* Just return the old binding */
 		thread_unlock(tp);
 		return (0);
@@ -3089,6 +3089,94 @@ cpu_unbind(processorid_t cpu, boolean_t unbind_all_threads)
 			if (!unbind_all_threads && TB_CPU_IS_HARD(tp))
 				continue;
 			err = cpu_bind_thread(tp, PBIND_NONE, &obind, &berr);
+			if (ret == 0)
+				ret = err;
+		} while ((tp = tp->t_forw) != pp->p_tlist);
+		mutex_exit(&pp->p_lock);
+	}
+	mutex_exit(&pidlock);
+	if (ret == 0)
+		ret = berr;
+	return (ret);
+}
+
+/*
+ * Unbind threads bound to specified CPU.
+ *
+ * If `unbind_all_threads' is true, unbind all user threads bound to a given
+ * CPU. Otherwise unbind all soft-bound user threads.
+ */
+int
+cpu_unbind2(processorid_t cpu, boolean_t unbind_all_threads)
+{
+	processorid_t obind;
+	kthread_t *tp;
+	int ret = 0;
+	proc_t *pp;
+	int err, berr = 0;
+	size_t ncpus;
+	processorid_t *cpus;
+	uchar_t flags;
+
+	ASSERT(MUTEX_HELD(&cpu_lock));
+
+	mutex_enter(&pidlock);
+	for (pp = practive; pp != NULL; pp = pp->p_next) {
+		mutex_enter(&pp->p_lock);
+		tp = pp->p_tlist;
+		/*
+		 * Skip zombies, kernel processes, and processes in
+		 * other zones, if called from a non-global zone.
+		 */
+		if (tp == NULL || (pp->p_flag & SSYS) ||
+		    !HASZONEACCESS(curproc, pp->p_zone->zone_id)) {
+			mutex_exit(&pp->p_lock);
+			continue;
+		}
+		do {
+			if (cpu_find(cpu,
+				tp->t_bind_ncpus, tp->t_bind_cpus) == B_FALSE)
+				continue;
+
+			/* if (tp->t_bind_cpu != cpu) */
+			/* 	continue; */
+
+			/*
+			 * Skip threads with hard binding when
+			 * `unbind_all_threads' is not specified.
+			 */
+			if (!unbind_all_threads && TB2_CPU_IS_HARD(tp))
+				continue;
+
+			/*
+			 * Remove cpu from the thread's binding set.
+			 */
+			ncpus = tp->t_bind_ncpus;
+			cpus = tp->t_bind_cpus;
+			flags = tp->t_bindflag2;
+
+			int new_ncpus = ncpus - 1;
+			processorid_t *new_cpus =
+			    kmem_alloc(new_ncpus * sizeof (processorid_t),
+				KM_SLEEP);
+
+			/*
+			 * Iterate current list (i), copy all to the
+			 * new list (j) except the CPU being unbound.
+			 */
+			for (int i = 0, j = 0; i < ncpus; i++) {
+				if (cpus[i] != cpu)
+					new_cpus[j++] = cpus[i];
+			}
+			ASSERT(j == (i - 1))
+
+			tp->t_bind_ncpus = new_ncpus;
+			tp->t_bind_cpus = new_cpus;
+
+			kmem_free(cpus, ncpus * sizeof (processorid_t));
+
+			err = cpu_bind_thread2(PBIND2_CLEAR, tp, &new_ncpus,
+			    new_cpus, flags, &berr);
 			if (ret == 0)
 				ret = err;
 		} while ((tp = tp->t_forw) != pp->p_tlist);
