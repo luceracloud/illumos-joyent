@@ -349,7 +349,7 @@ extern struct sysent	sysent32[];
 
 extern struct sysent	nosys_ent;	/* entry for invalid system call */
 
-#define	NSYSCALL 	256		/* number of system calls */
+#define	NSYSCALL 	257		/* number of system calls */
 
 #define	LOADABLE_SYSCALL(s)	(s->sy_flags & SE_LOADABLE)
 #define	LOADED_SYSCALL(s)	(s->sy_flags & SE_LOADED)

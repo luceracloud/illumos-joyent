@@ -246,6 +246,8 @@ caddr_t	schedctl();
 long	pathconf(char *, int);
 long	fpathconf(int, int);
 int	processor_bind(idtype_t, id_t, processorid_t, processorid_t *);
+int	processor_bind2(pbind2_op_t, idtype_t, id_t, size_t *,
+    processorid_t *, uchar_t *);
 int	processor_info(processorid_t, processor_info_t *);
 int	p_online(processorid_t, int);
 
@@ -757,7 +759,8 @@ struct sysent sysent[NSYSCALL] =
 	/* 252 */ SYSENT_CI("lwp_mutex_register", lwp_mutex_register,	2),
 	/* 253 */ SYSENT_CI("cladm",		cladm,		3),
 	/* 254 */ SYSENT_CI("uucopy",		uucopy,		3),
-	/* 255 */ SYSENT_CI("umount2",		umount2,	2)
+	/* 255 */ SYSENT_CI("umount2",		umount2,	2),
+	/* 256 */ SYSENT_CI("processor_bind2",	processor_bind2,6)
 };
 
 
@@ -1082,7 +1085,8 @@ struct sysent sysent32[NSYSCALL] =
 	/* 252 */ SYSENT_CI("lwp_mutex_register", lwp_mutex_register,	2),
 	/* 253 */ SYSENT_CI("cladm",		cladm,		3),
 	/* 254 */ SYSENT_CI("uucopy",		uucopy,		3),
-	/* 255 */ SYSENT_CI("umount2",		umount2,	2)
+	/* 255 */ SYSENT_CI("umount2",		umount2,	2),
+	/* 256 */ SYSENT_CI("processor_bind2",	processor_bind2,6)
 };
 #endif /* _SYSCALL32_IMPL */
 
