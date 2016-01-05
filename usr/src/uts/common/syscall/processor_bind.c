@@ -551,6 +551,10 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 	zone_t		*zptr;
 	contract_t	*ct;
 
+	if ((op == PBIND2_OP_SET || op == PBIND2_OP_QUERY) &&
+	    (uncpus == NULL || ucpus == NULL || uflags == NULL))
+		return (set_errno(EINVAL));
+
 	size_t ncpus = *uncpus;
 	uchar_t flags = *uflags;
 	/*
