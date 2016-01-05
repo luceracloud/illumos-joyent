@@ -136,7 +136,7 @@ extern int	processor_info(processorid_t processorid,
 extern int	processor_bind(idtype_t idtype, id_t id,
 		    processorid_t processorid, processorid_t *obind);
 extern int	processor_bind2(pbind2_op_t, idtype_t idtype, id_t id,
-    size_t ncpus, processorid_t *cpus, uchar_t *flags);
+    size_t *ncpus, processorid_t *cpus, uchar_t *flags);
 extern processorid_t getcpuid(void);
 extern lgrpid_t gethomelgroup(void);
 
