@@ -2744,9 +2744,16 @@ cpu_bind_thread2(pbind2_op_t op, kthread_id_t tp, size_t *ncpus,
 
 	switch (op) {
 	case PBIND2_OP_QUERY:
-		*ncpus = tp->t_bind_ncpus;
-		*cpus = *tp->t_bind_cpus;
-		*flags = tp->t_bindflag2;
+		/*
+		 * TODO: this interface is so damn hacky.
+		 */
+		*ncpus = tp->t_bind_ncpus > *ncpus ? *ncpus : tp->t_bind_ncpus;
+		if (tp->t_bind_ncpus > 0) {
+			for (int i = 0; i < tp->t_bind_ncpus; i++)
+				cpus[i] = tp->t_bind_cpus[i];
+			*flags = tp->t_bindflag2;
+		}
+
 		/* Just return the old binding */
 		thread_unlock(tp);
 		return (0);

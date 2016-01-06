@@ -556,6 +556,7 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		return (set_errno(EINVAL));
 
 	size_t ncpus = *uncpus;
+	size_t ncpus_orig = ncpus;
 	uchar_t flags = *uflags;
 	/*
 	 * If the binding is being queried (PBIND2_OP_QUERY) then this
@@ -570,10 +571,9 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 	 * represent a CPU identifier. The kernel uses short. Thus the
 	 * conversion here.
 	 */
+	processorid_t *procids = kmem_zalloc(ncpus * sizeof (processorid_t),
+	    KM_SLEEP);
 	short *cpus = kmem_zalloc(ncpus * sizeof (short), KM_SLEEP);
-
-	if (copyin(ucpus, cpus, ncpus * sizeof (short)) == -1)
-		return (set_errno(EFAULT));
 
 	/*
 	 * Since we might be making a binding to a processor, hold the
@@ -584,10 +584,15 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 
 	switch (op) {
 	case PBIND2_OP_SET:
+		if (copyin(ucpus, procids,
+			ncpus * sizeof (processorid_t)) == -1)
+			return (set_errno(EFAULT));
+
 		/*
 		 * Verify all CPU identifiers are valid.
 		 */
 		for (size_t i = 0; i < ncpus; i++) {
+			cpus[i] = (short)procids[i];
 			if ((cp = cpu_get((processorid_t)cpus[i])) == NULL ||
 			    (cp->cpu_flags & (CPU_QUIESCED | CPU_OFFLINE)))
 				ret = EINVAL;
@@ -755,12 +760,19 @@ processor_bind2(pbind2_op_t op, idtype_t idtype, id_t id, size_t *uncpus,
 		ret = err;
 
 	if (ret == 0 && (op == PBIND2_OP_QUERY)) {
+		/*
+		 * Need to convert internal representation back to
+		 * userland representation before copying out.
+		 */
+		for (int i = 0; i < ncpus; i++)
+			procids[i] = (processorid_t)cpus[i];
 
-		if (copyout((caddr_t)cpus, (caddr_t)ucpus,
-		    ncpus * sizeof (short)) == -1)
+		if (copyout((caddr_t)procids, (caddr_t)ucpus,
+		    ncpus * sizeof (processorid_t)) == -1)
 			ret = EFAULT;
 
-		kmem_free(cpus, ncpus * sizeof (short));
+		kmem_free(procids, ncpus_orig * sizeof (processorid_t));
+		kmem_free(cpus, ncpus_orig * sizeof (short));
 
 		*uncpus = ncpus;
 		*uflags = flags;
